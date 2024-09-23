@@ -49,6 +49,11 @@ void createVideoFromImages(const std::string& directoryPath, const std::string& 
     // Sort the image paths based on filenames
     std::sort(imagePaths.begin(), imagePaths.end());
 
+    if (imagePaths.empty()) {
+        std::cerr << "Failed to create " << outputVideoPath << ". No images found.\n";
+        return;
+    }
+
     // Create a VideoWriter object to write the video
     cv::Size frameSize;
     cv::Mat frame = cv::imread(imagePaths[0], cv::IMREAD_COLOR);
@@ -58,6 +63,7 @@ void createVideoFromImages(const std::string& directoryPath, const std::string& 
         std::cerr << "Failed to read the first image." << std::endl;
         return;
     }
+
     const auto [first_time, last_time] = getMinMaxTimes(imagePaths);
     if (first_time < 0 || last_time < 0)
         return;
@@ -92,10 +98,12 @@ void createVideoFromImages(const std::string& directoryPath, const std::string& 
                 std::cerr << "Failed to read image: " << closestImagePath << std::endl;
             }
         }
+
         bar.update();
         elapsed_time += ms_per_frame;
     }
-    printf("\n");
+
+    std::cerr << "\n";
     videoWriter.release();
-    std::cout << "Video created: " << outputVideoPath << std::endl;
+    std::cerr << "Video created: " << outputVideoPath << std::endl;
 }

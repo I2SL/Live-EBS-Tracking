@@ -1,6 +1,6 @@
 // File     utils.h
 // Summary  Utility function for data passing and display.
-// Authors  Trevor Schlack, Jacob Trzaska
+// Authors  Trevor Schlackt, Jacob Trzaska
 # pragma once
 
 // Standard imports
@@ -55,30 +55,25 @@ class Registry {
      Log targets using a nearest-neighbor algorithm.
      */
 
-     public:
+     private:
      // Keep a list of target IDs.
      unsigned long int nextID {0};
 
      // Ordered dictionary of target information.
      std::map<int, Eigen::MatrixXd> targets;
-     std::set<int> unassignedTargets;
 
      // Number of frames each target has been missing.
      std::map<int, int> numFramesLost;
-
-     // Camera to target mappings.
-     int num_stages;
-     std::map<int, int> cameraTargets;
 
      // Set thresholds.
      int maxNumFramesLost;
      double distThreshold;
 
-     // Prevent a race condition.
-     std::mutex lock;
+    // Prevent a race condition.
+    std::mutex lock;
 
      public:
-     Registry(int mNumFrLost,  double distTh, int num_cams = 1) : nextID {0}, num_stages {num_cams} {
+     Registry(int mNumFrLost,  double distTh) : nextID {0} {
           /*
           Constructor.
 
@@ -94,11 +89,6 @@ class Registry {
           // Set thresholds.
           maxNumFramesLost = mNumFrLost;
           distThreshold = distTh;
-
-          // Build the set of camera IDs.
-          for (int id {0}; id < num_stages; ++id) {
-               cameraTargets[id] = -1; // A target ID of '-1' means no target assigned.
-          }
 
           return;
      }
@@ -118,7 +108,7 @@ class Registry {
           */
 
           // Prevent a read during writing.
-          std::lock_guard<std::mutex> mut(lock);
+          lock.lock();          
 
           // Store IDs that need deregistering.
           std::vector<int> rmIds;
@@ -137,6 +127,8 @@ class Registry {
                // Deregister missing targets.
                for (auto ID : rmIds)
                     deRegister(ID);
+
+               lock.unlock();
 
                return;
           }
@@ -305,8 +297,7 @@ class Registry {
           for (auto ID : rmIds)
                deRegister(ID);
 
-          // Associate the cameras to targets.
-          associate();
+          lock.unlock();
 
           return;
      }
@@ -323,56 +314,11 @@ class Registry {
                List of current objects tracked.
           */
 
-          std::lock_guard<std::mutex> mut(lock);
+          lock.lock();
           std::map<int, Eigen::MatrixXd> retTargets {targets};
+          lock.unlock();
 
           return retTargets;
-     }
-
-
-     void assign(int cameraId, int targId) {
-         /*
-         Manually assign a camera to a specific target ID.
-        
-         Args:
-             cameraId: Camera index, as entered in the JSON file.
-             targId: Target index, as displayed on the event image.
-
-         Ret:
-             None.
-
-         Notes:
-             This function should be updated to a return a string, indicating
-             a successful assignment (to the curses window).
-         */
-
-         if (cameraId >= num_stages || cameraId < 0)
-             return;
-
-         // Acquire exlcusive access to registry.
-         std::lock_guard<std::mutex> mut(lock);
-
-         // Backup current target.
-         int curr {cameraTargets[cameraId]};
-
-         // If not tracking, immediately assign new target.
-         if (curr == -1) {
-             if (!targets.contains(targId))
-                 return;
-
-             cameraTargets[cameraId] = targId;
-         } else {
-             // If we are tracking, check whether the new camera must be added to
-             // the untracked set.
-             if (!targets.contains(targId)) {
-                 cameraTargets[cameraId] = -1;
-                 return;
-             }
-
-             cameraTargets[cameraId] = targId;
-         }
-
-         return;
      }
 
 
@@ -391,7 +337,6 @@ class Registry {
           // Add the target and increment the ID counter.
           targets[nextID] = centroid;
           numFramesLost[nextID] = 0;
-          unassignedTargets.insert(nextID);
           ++nextID;
 
           return;
@@ -403,56 +348,17 @@ class Registry {
           Remove a target from the tracking list.
 
           Args:
-               ID: Dictionary key for object being removed.
+               objKey: Dictionary key for object being removed.
 
           Ret:
                None
           */
 
-          // Remove the ID from target listing.
           numFramesLost.erase(ID);
-          unassignedTargets.erase(ID);
           targets.erase(ID);
-
-          // Unassign cameras tracking this ID.
-          for (auto iter {cameraTargets.begin()}; iter != cameraTargets.end(); ++iter)
-               if (iter->second == ID)
-                    iter-> second = -1;
 
           return;
     }
-
-
-    void associate() {
-         /*
-         Update the camera - target associations.
-
-         Args:
-             None.
-
-         Ret:
-             None.
-
-         Notes:
-             None.
-         */
-
-         for (int id {0}; id < num_stages; ++id) {
-             if (cameraTargets[id] != -1)
-                 continue;
-
-             if (unassignedTargets.empty())
-                 break;
-
-             // Assign camera.
-             cameraTargets[id] = *unassignedTargets.begin();
-
-             // Flag target as assigned. 
-             unassignedTargets.erase(*unassignedTargets.begin());
-         }
-
-         return;
-     }
 };
 
 
@@ -675,28 +581,13 @@ arma::mat get_dbscan_positions(const arma::mat &positions_mat, double eps) {
 
 
 arma::mat run_tracker(std::vector<double> events, double dt, DBSCAN_KNN T, bool enable_tracking) {
-    /*
-    Run clustering algorithms on the event stream to locate possible targets of interest.
-
-    Args:
-        events: Measured events.
-        dt:     Event integration time.
-        T:      Tracking algorithm based on DBSCAN and nearest-neighbors.
-        enable_tracking: Enable/disable clustering-based tracking.
-
-    Ret:
-        Arma matrix of possible target positions.
-
-    Notes:
-        None.
-    */
 
     std::vector<double> positions;
     if (!enable_tracking || events.empty()) {
         return positions_vector_to_matrix(positions);
     }
 
-    double * mem {events.data()};
+    double *mem {events.data()};
     double t0 {events[0]};
 
     int nEvents {(int) events.size() / 4};
@@ -1038,8 +929,7 @@ WindowInfo process_packet(const std::vector<double>& events, const DBSCAN_KNN& T
 These last two functions are responsible for moving 
 the FLIR stage when the system in coarse-track.
 ***************************************************/
-StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit &proc_init, arma::mat positions, std::vector<int> prev_pans, std::vector<int> prev_tilts,
-    Registry * reg) {
+StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit &proc_init, arma::mat positions, std::vector<int> prev_pans, std::vector<int> prev_tilts) {
     /*
     Update stage positions using clusters from the event-based tracking algorithm.
 
@@ -1049,7 +939,6 @@ StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit 
         positions:  Locations of possible targets.
         prev_pans:  Previous pan angles.
         prev_tilts: Previous tilt angles.
-        reg:        Global target registry.
 
     Ret:
         Details on the new stage configurations.
@@ -1064,21 +953,19 @@ StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit 
     std::vector<int> tilts {prev_tilts};
 
     // Assign cameras to targets.
-    for (int n {0}; n < N; ++n) {
-        if (proc_init.enable_stage[n] && reg->cameraTargets[n] != -1) {
-            Eigen::MatrixXd target_position {reg->targets[reg->cameraTargets[n]]};
-
+    for (int n {0}; n < N && n < positions.n_cols; ++n)
+        if (proc_init.enable_stage[n]) {
             // Go straight down the list.
-            double x { target_position(0, 0) - ((double) proc_init.Nx / 2) };
-            double y { ((double) proc_init.Ny / 2) - target_position(1, 0) };
+            double x { positions(0, n) - ((double) proc_init.Nx / 2) };
+            double y { ((double) proc_init.Ny / 2) - positions(1, n) };
     
-            double theta { get_theta(y, proc_init.Ny, proc_init.hfovy) };
-            double phi { get_phi(x, proc_init.Nx, proc_init.hfovx) };
+           double theta { get_theta(y, proc_init.Ny, proc_init.hfovy) };
+           double phi { get_phi(x, proc_init.Nx, proc_init.hfovx) };
 
-            double theta_prime {
-                 get_theta_prime(
-                     phi, theta, proc_init.offset_x[n], proc_init.offset_y[n], proc_init.offset_z[n], proc_init.r_center[n], proc_init.arm[n]
-                 )
+           double theta_prime {
+                get_theta_prime(
+                    phi, theta, proc_init.offset_x[n], proc_init.offset_y[n], proc_init.offset_z[n], proc_init.r_center[n], proc_init.arm[n]
+                )
             };
 
             double phi_prime {
@@ -1101,7 +988,6 @@ StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit 
             ctrl[n]->update_setpoints(pan_position + proc_init.pan_offset[n], tilt_position + proc_init.tilt_offset[n]);
             pans[n] = pan_position;
             tilts[n] = tilt_position;
-        }
     }
 
     StageInfo info(pans, tilts);
@@ -1109,10 +995,65 @@ StageInfo move_stage(std::vector<StageController *>& ctrl, const ProcessingInit 
 }
 
 
+int move_stage(StageController * ctrl, int idx, const ProcessingInit &proc_init, Eigen::MatrixXd positions) {
+    /*
+    Update stage positions using clusters from the event-based tracking algorithm.
+
+    Args:
+        ctrl:       Collection of stage controller pointers.
+        idx:        Stage ID.
+        proc_init:  Globally important program parameters.
+        positions:  Locations of possible targets.
+
+    Ret:
+        Details on the new stage configurations.
+
+    Notes:
+        None.
+    */
+
+    // Assign cameras to targets.
+    if (proc_init.enable_stage[idx]) {
+        // Go straight down the list.
+        double x { positions(0, 0) - ((double) proc_init.Nx / 2) };
+        double y { ((double) proc_init.Ny / 2) - positions(0, 1) };
+    
+       double theta { get_theta(y, proc_init.Ny, proc_init.hfovy) };
+       double phi { get_phi(x, proc_init.Nx, proc_init.hfovx) };
+
+       double theta_prime {
+            get_theta_prime(
+                phi, theta, proc_init.offset_x[idx], proc_init.offset_y[idx], proc_init.offset_z[idx], proc_init.r_center[idx], proc_init.arm[idx]
+            )
+        };
+
+        double phi_prime {
+            get_phi_prime(
+                phi, proc_init.offset_x[idx], proc_init.offset_y[idx], proc_init.r_center[idx]
+            )
+        };
+
+        int pan_position {
+            get_motor_position(
+                proc_init.begin_pan[idx], proc_init.end_pan[idx], proc_init.begin_pan_angle[idx], proc_init.end_pan_angle[idx], phi_prime
+            )
+        };
+
+        // Convert tilt to FLIR frame
+        theta_prime = M_PI_2 - theta_prime;
+        int tilt_position = get_motor_position(proc_init.begin_tilt[idx], proc_init.end_tilt[idx],
+                                                proc_init.begin_tilt_angle[idx], proc_init.end_tilt_angle[idx], theta_prime);
+
+        ctrl->update_setpoints(pan_position + proc_init.pan_offset[idx], tilt_position + proc_init.tilt_offset[idx]);
+    }
+
+    return 0;
+}
+
 std::tuple<StageInfo, WindowInfo>
 read_future(std::vector<StageController *>& ctrl, std::future<WindowInfo> &future, const ProcessingInit &proc_init,
             const StageInfo &prevStage, std::ofstream &detectionsFile, std::ofstream &eventFile,
-            std::chrono::time_point<std::chrono::high_resolution_clock> start, Registry * reg) {
+            std::chrono::time_point<std::chrono::high_resolution_clock> start) {
     /*
     Get the data from packet processing and move the stages.
 
@@ -1155,7 +1096,7 @@ read_future(std::vector<StageController *>& ctrl, std::future<WindowInfo> &futur
         saveImage(window_info.event_info.event_image, "./event_images", std::to_string(elapsed));
 
     // Use the event detections for move stage when in coarse track.
-    StageInfo stage_info = move_stage(ctrl, proc_init, window_info.stage_positions, prevStage.prev_pan, prevStage.prev_tilt, reg);
+    StageInfo stage_info = move_stage(ctrl, proc_init, window_info.stage_positions, prevStage.prev_pan, prevStage.prev_tilt);
     std::tuple<StageInfo, WindowInfo> ret = {stage_info, window_info};
 
     return ret;
